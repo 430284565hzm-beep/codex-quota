@@ -1,0 +1,16 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:colorAccent">#389C91</item>
+        <item name="android:windowBackground">#EBF0F2</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+    <string name="app_name">Codex 余量</string>
+    <string name="widget_description">剩余额度、重置时间与重置券。点击刷新，点击储备打开兑换确认。</string>
+    <string name="capsule_description">紧凑玻璃胶囊，查看两个额度窗口。</string>
+</resources>

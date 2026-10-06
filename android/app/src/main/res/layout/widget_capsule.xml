@@ -1,0 +1,14 @@
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="4dp">
+    <ImageView android:id="@id/widget_material" android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/widget_preview_bg" android:scaleType="fitXY" android:importantForAccessibility="no" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:gravity="center_vertical" android:paddingStart="22dp" android:paddingEnd="12dp">
+        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
+            <TextView android:id="@id/widget_primary_label" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="当前窗口" android:textColor="#66777E" android:textSize="10sp" android:maxLines="1" android:ellipsize="end" />
+            <TextView android:id="@id/widget_primary" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="—" android:textColor="#27363D" android:textSize="26sp" android:fontFamily="sans-serif-light" android:maxLines="1" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="14sp" android:autoSizeMaxTextSize="32sp" android:autoSizeStepGranularity="1sp" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical" android:layout_marginStart="12dp">
+            <TextView android:id="@id/widget_secondary_label" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="长周期" android:textColor="#66777E" android:textSize="10sp" android:maxLines="1" android:ellipsize="end" />
+            <TextView android:id="@id/widget_secondary" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="—" android:textColor="#27363D" android:textSize="26sp" android:fontFamily="sans-serif-light" android:maxLines="1" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="14sp" android:autoSizeMaxTextSize="32sp" android:autoSizeStepGranularity="1sp" />
+        </LinearLayout>
+        <ImageView android:id="@id/widget_refresh" android:layout_width="36dp" android:layout_height="40dp" android:src="@drawable/ic_refresh" android:padding="8dp" android:contentDescription="立即刷新用量" />
+    </LinearLayout>
+</FrameLayout>

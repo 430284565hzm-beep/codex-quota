@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.codex.glass.test">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+    <application android:label="Codex Glass local verification" />
+    <instrumentation android:name="dev.codex.glass.VerifyRunner" android:targetPackage="dev.codex.glass" android:functionalTest="true" />
+</manifest>

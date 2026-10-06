@@ -1,0 +1,17 @@
+Codex 余量 / Codex Quota
+Copyright 2026 430284565hzm-beep
+
+This independently developed application is not an official OpenAI product.
+
+Account authentication and request behavior were implemented by inspecting
+OpenAI Codex, Copyright 2025 OpenAI and contributors, licensed under the
+Apache License, Version 2.0. The upstream license and attribution are retained
+in android/CODEX_LICENSE.txt and android/THIRD_PARTY_NOTICES.md.
+
+Windows communicates with the separately installed Codex app-server.
+The Android implementation does not bundle the Codex executable or Rust libraries.
+Android and Windows platform libraries are supplied by the operating system.
+Development toolchains are downloaded separately from their official sources.
+
+Application graphics, glass materials, icons, animations and synthesized WAV
+sounds in this repository were created for this application.
