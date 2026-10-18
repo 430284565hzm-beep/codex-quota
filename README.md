@@ -28,7 +28,7 @@ Native Windows and Android clients for Codex account quotas, banked resets, and 
 
 | 平台 | 发布文件 | 当前版本 | 运行条件 |
 | --- | --- | --- | --- |
-| Windows | `CodexQuota-Windows.exe` | 1.4.0 | Windows 10/11、.NET Framework 4.8、当前账户已安装并登录 Codex |
+| Windows | `CodexQuota-Windows.exe` | 1.4.1 | Windows 10/11、.NET Framework 4.8、当前账户已安装并登录 Codex |
 | Android | `CodexQuota-Android.apk` | 1.3.0 | Android 8.0 / API 26 及以上，可以访问 OpenAI 账户服务 |
 
 Windows 双击 EXE 即可运行，不需要打开终端。手机安装 APK 后，点击「继续使用 ChatGPT」，在 OpenAI 官方浏览器页面完成授权。应用包名保持 `dev.codex.glass`，以兼容此前的安装更新。

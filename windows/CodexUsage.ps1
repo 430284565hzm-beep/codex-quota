@@ -5,7 +5,12 @@ if ($VerifyDock) { $Verify = $true }
 if ($VerifyMotion -or $VerifyBank) { $Verify = $true }
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml, System.Web.Extensions, System.Windows.Forms, System.Drawing
-Add-Type -Path (Join-Path $PSScriptRoot 'UsageClient.cs') -ReferencedAssemblies System.Web.Extensions, System.Drawing, PresentationCore, PresentationFramework, WindowsBase, System.Xaml
+$materialCompiler=[CodeDom.Compiler.CompilerParameters]::new()
+$materialCompiler.CompilerOptions='/optimize+';$materialCompiler.GenerateInMemory=$true
+foreach($assemblyName in 'System','System.Core','System.Web.Extensions','System.Drawing','PresentationCore','PresentationFramework','WindowsBase','System.Xaml'){
+    [void]$materialCompiler.ReferencedAssemblies.Add([Reflection.Assembly]::LoadWithPartialName($assemblyName).Location)
+}
+Add-Type -TypeDefinition ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'UsageClient.cs'))) -CompilerParameters $materialCompiler
 if (!$Verify -and !$Preview) {
     $script:instance = New-Object System.Threading.Mutex($false, 'Local\CodexUsageWPF')
     if (!$instance.WaitOne(0, $false)) {
@@ -170,10 +175,10 @@ function Sync-OuterBounds {
     [Windows.Controls.Canvas]::SetTop($ui.Outer,5)
 }
 $script:glassScreen=$null
-$script:glassTask=$null
-$script:glassNextCapture=[DateTime]::MinValue
+$script:glassRenderer=$null
 function Update-GlassViewport([switch]$Force) {
     if ($script:dockTransition -and !$Force) { return }
+    if ($script:glassRenderer) { $script:glassScreen=$script:glassRenderer.Frame }
     if (!$script:glassScreen -or $script:glassHandle -eq [IntPtr]::Zero) { return }
     $sourceInfo=[Windows.Interop.HwndSource]::FromHwnd($script:glassHandle)
     if (!$sourceInfo -or !$sourceInfo.CompositionTarget) { return }
@@ -187,25 +192,10 @@ function Update-GlassViewport([switch]$Force) {
 function Update-GlassFrame {
     if ($Verify -or !$script:appReady -or !$window.IsVisible -or $window.WindowState -eq 'Minimized' -or $script:glassHandle -eq [IntPtr]::Zero -or $script:isDragging -or $script:isResizing -or $script:dockTransition) { return }
     try {
-        if ($script:glassTask) {
-            if (!$script:glassTask.IsCompleted) { return }
-            $frame=$script:glassTask.GetAwaiter().GetResult()
-            $script:glassTask=$null
-            if ($frame) {
-                $source=[Windows.Media.Imaging.BitmapSource]::Create($frame.Width,$frame.Height,96,96,[Windows.Media.PixelFormats]::Bgra32,$null,$frame.Pixels,$frame.Width*4)
-                $source.Freeze()
-                $script:glassScreen=$frame
-                $script:backdropBrush.Viewbox=[Windows.Rect]::new(0,0,$frame.Width,$frame.Height)
-                $script:backdropBrush.ImageSource=$source
-                Update-GlassViewport
-            }
+        if (!$script:glassRenderer) {
+            $script:glassRenderer=[GlassMaterialRenderer]::new($window,$ui.Outer,$script:backdropBrush)
         }
-        if (!$script:glassTask -and [DateTime]::UtcNow -ge $script:glassNextCapture) {
-            $bounds=[Windows.Forms.SystemInformation]::VirtualScreen
-            $script:glassTask=[GlassScreenCapture]::CaptureAsync($script:glassHandle,$bounds.Left,$bounds.Top,$bounds.Width,$bounds.Height)
-            $script:glassNextCapture=[DateTime]::UtcNow.AddMilliseconds(100)
-        }
-    } catch { $script:glassTask=$null; $script:glassCaptureError=$_.Exception.GetBaseException().Message }
+    } catch { $script:glassCaptureError=$_.Exception.GetBaseException().Message }
 }
 function Update-GlassFrameNow { Update-GlassFrame }
 function Update-DockPeekLayout {
@@ -274,12 +264,9 @@ function Set-GlassRect($rect) {
     [Windows.Controls.Canvas]::SetTop($ui.Outer,$rect.Top-$window.Top+5)
 }
 function Sync-CapturePause {
-    $paused=[bool]($script:isDragging -or $script:isResizing -or $script:dockTransition)
-    [GlassScreenCapture]::SetPaused($paused)
-    if ($script:glassTimer) {
-        if ($paused) { $script:glassTimer.Stop() }
-        elseif ($script:appReady -and !$Verify -and !$Preview) { $script:glassTimer.Start() }
-    }
+    $paused=[bool]($script:isDragging -or $script:isResizing -or $script:dockTransition -or !$window.IsVisible -or $window.WindowState -eq 'Minimized')
+    if ($script:glassRenderer) { $script:glassRenderer.SetPaused($paused) }
+    else { [GlassScreenCapture]::SetPaused($paused) }
 }
 function Complete-Dock([bool]$compact) {
     $script:dockCollapsed=$compact
@@ -697,7 +684,7 @@ $window.Add_PreviewMouseLeftButtonDown({
     if ($edge) {
         $_.Handled=$true;$script:isResizing=$true;Sync-CapturePause
         try { [WidgetWindow]::Resize($script:glassHandle,$edge) }
-        finally {$script:isResizing=$false;$script:glassNextCapture=[DateTime]::MinValue;Sync-CapturePause}
+        finally {$script:isResizing=$false;Sync-CapturePause}
     }
 })
 $ui.Outer.Add_MouseLeftButtonDown({
@@ -713,7 +700,7 @@ $ui.Outer.Add_MouseLeftButtonDown({
         $wasCompact=$script:dockCollapsed; $oldLeft=$window.Left; $oldTop=$window.Top
         try { $script:isDragging=$true; Sync-CapturePause; $window.DragMove(); $_.Handled=$true } catch { }
         finally {
-            $script:isDragging=$false; $script:glassNextCapture=[DateTime]::MinValue
+            $script:isDragging=$false
             Sync-CapturePause
         }
         if ($wasCompact) {
@@ -796,11 +783,11 @@ $window.Add_SizeChanged({
     Update-Layout
 })
 $window.Add_LocationChanged({ Update-GlassViewport })
+$window.Add_StateChanged({ Sync-CapturePause })
+$window.Add_IsVisibleChanged({ Sync-CapturePause })
 $window.Add_KeyDown({ if ($_.Key -eq 'F5') { Start-Refresh };if($_.Key -eq 'F9'){Show-BankSheet;$_.Handled=$true};if($_.Key -eq 'Escape' -and $script:bankSheetOpen){Close-BankSheet;$_.Handled=$true} })
 $poll = New-Object System.Windows.Threading.DispatcherTimer
 $poll.Interval = [TimeSpan]::FromMilliseconds(80); $poll.Add_Tick({ Complete-BankUse;Complete-Refresh })
-$script:glassTimer = New-Object System.Windows.Threading.DispatcherTimer
-$glassTimer.Interval = [TimeSpan]::FromMilliseconds(16); $glassTimer.Add_Tick({ Update-GlassFrameNow })
 $refreshTimer = New-Object System.Windows.Threading.DispatcherTimer
     $refreshTimer.Interval = [TimeSpan]::FromSeconds(60); $refreshTimer.Add_Tick({ if ($script:theme -eq 'auto') { Set-Theme }; Start-Refresh })
 $script:dockFallback=New-Object System.Windows.Threading.DispatcherTimer
@@ -818,7 +805,8 @@ $dockLeave.Add_Tick({
     if ($script:dockSide -and !$ui.Outer.IsMouseOver -and !$menu.IsOpen -and !$script:isDragging -and !$script:dockCollapsed -and !$script:bankSheetOpen -and !$script:bankAnimationActive) { Show-Dock $true }
 })
 $window.Add_Closed({
-    $poll.Stop(); $glassTimer.Stop(); $refreshTimer.Stop(); Stop-DockMotion; $dockEnter.Stop(); $dockLeave.Stop(); $client.Dispose()
+    if($script:glassRenderer){$script:glassRenderer.Dispose();$script:glassRenderer=$null}
+    $poll.Stop(); $refreshTimer.Stop(); Stop-DockMotion; $dockEnter.Stop(); $dockLeave.Stop(); $client.Dispose()
     Clear-QuotaRestore;$script:celebration.Stop();$script:resetSounds.Stop();$script:resetSounds.Dispose()
     if (!$Verify -and !$Preview) {
         $width = if ($script:dockSide) { $script:normalWidth } else { $window.Width }
@@ -1095,7 +1083,7 @@ public sealed class BankFixtureClient {
         Set-WindowRect @{ Width=$script:normalWidth; Height=$script:normalHeight
             Left=[Math]::Max($area.Left+12,[Math]::Min($window.Left,$area.Right-$script:normalWidth-12))
             Top=[Math]::Max($area.Top+12,[Math]::Min($window.Top,$area.Bottom-$script:normalHeight-12)) }
-        $poll.Start(); $glassTimer.Start(); $refreshTimer.Start(); Start-Refresh
+        $poll.Start(); $refreshTimer.Start(); Start-Refresh
         if ($script:dockAllowed -and $settings.dockSide -in @('left','right','top')) {
             $script:dockSide = [string]$settings.dockSide
             $script:dockCenterX = [double]$settings.dockCenterX

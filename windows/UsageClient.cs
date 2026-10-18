@@ -8,6 +8,8 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media.Animation;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 // Native animation clocks drive the light points and paper without PowerShell frame callbacks.
 public sealed class ResetCelebration : FrameworkElement {
@@ -96,40 +98,49 @@ public sealed class QuotaRefillText : IDisposable {
 
 public static class GlassCapture {
     internal static byte[] Blur(byte[] input,int width,int height,int radius) {
-        byte[] pass=new byte[input.Length], output=new byte[input.Length];
+        byte[] output=new byte[input.Length];
+        BlurInto(input,width,height,radius,new byte[input.Length],output,new int[width*3]);
+        return output;
+    }
+    // The same two box passes as before, with RGB accumulated together and
+    // the vertical pass walking contiguous rows instead of strided columns.
+    internal static void BlurInto(byte[] input,int width,int height,int radius,byte[] pass,byte[] output,int[] sums) {
         int count=radius*2+1;
         for(int y=0;y<height;y++) {
-            int row=y*width*4;
-            for(int c=0;c<3;c++) {
-                int sum=0;
-                for(int i=-radius;i<=radius;i++) sum+=input[row+Math.Max(0,Math.Min(width-1,i))*4+c];
-                for(int x=0;x<width;x++) {
-                    pass[row+x*4+c]=(byte)(sum/count);
-                    int remove=Math.Max(0,x-radius),add=Math.Min(width-1,x+radius+1);
-                    sum+=input[row+add*4+c]-input[row+remove*4+c];
-                }
+            int row=y*width*4,b=0,g=0,r=0;
+            for(int i=-radius;i<=radius;i++) {
+                int at=row+Math.Max(0,Math.Min(width-1,i))*4;
+                b+=input[at];g+=input[at+1];r+=input[at+2];
             }
-            for(int x=0;x<width;x++) pass[row+x*4+3]=255;
-        }
-        for(int x=0;x<width;x++) {
-            for(int c=0;c<3;c++) {
-                int sum=0;
-                for(int i=-radius;i<=radius;i++) sum+=pass[(Math.Max(0,Math.Min(height-1,i))*width+x)*4+c];
-                for(int y=0;y<height;y++) {
-                    output[(y*width+x)*4+c]=(byte)(sum/count);
-                    int remove=Math.Max(0,y-radius),add=Math.Min(height-1,y+radius+1);
-                    sum+=pass[(add*width+x)*4+c]-pass[(remove*width+x)*4+c];
-                }
+            for(int x=0;x<width;x++) {
+                int at=row+x*4;
+                pass[at]=(byte)(b/count);pass[at+1]=(byte)(g/count);pass[at+2]=(byte)(r/count);pass[at+3]=255;
+                int remove=row+Math.Max(0,x-radius)*4,add=row+Math.Min(width-1,x+radius+1)*4;
+                b+=input[add]-input[remove];g+=input[add+1]-input[remove+1];r+=input[add+2]-input[remove+2];
             }
-            for(int y=0;y<height;y++) output[(y*width+x)*4+3]=255;
         }
-        return output;
+        Array.Clear(sums,0,sums.Length);
+        for(int i=-radius;i<=radius;i++) {
+            int row=Math.Max(0,Math.Min(height-1,i))*width*4;
+            for(int x=0;x<width;x++) {int at=row+x*4,s=x*3;sums[s]+=pass[at];sums[s+1]+=pass[at+1];sums[s+2]+=pass[at+2];}
+        }
+        for(int y=0;y<height;y++) {
+            int row=y*width*4,remove=Math.Max(0,y-radius)*width*4,add=Math.Min(height-1,y+radius+1)*width*4;
+            for(int x=0;x<width;x++) {
+                int at=row+x*4,s=x*3,a=add+x*4,z=remove+x*4;
+                output[at]=(byte)(sums[s]/count);output[at+1]=(byte)(sums[s+1]/count);output[at+2]=(byte)(sums[s+2]/count);output[at+3]=255;
+                sums[s]+=pass[a]-pass[z];sums[s+1]+=pass[a+1]-pass[z+1];sums[s+2]+=pass[a+2]-pass[z+2];
+            }
+        }
     }
 }
 
 public sealed class GlassScreenFrame {
     public int Left, Top, NativeWidth, NativeHeight, Width, Height;
     public byte[] Pixels;
+    internal int PixelLeft,PixelTop,CanvasWidth,CanvasHeight;
+    internal Action ReleasePixels;
+    internal void Release() { Action release=Interlocked.Exchange(ref ReleasePixels,null);if(release!=null)release(); }
     public GlassScreenFrame(int left,int top,int nativeWidth,int nativeHeight,int width,int height,byte[] pixels) {
         Left=left;Top=top;NativeWidth=nativeWidth;NativeHeight=nativeHeight;
         Width=width;Height=height;Pixels=pixels;
@@ -146,6 +157,7 @@ public static class GlassScreenCapture {
         public uint ClrUsed, ClrImportant;
     }
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd,out Rect rect);
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] static extern bool SetWindowDisplayAffinity(IntPtr hwnd,uint affinity);
     [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hwnd);
     [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr hwnd,IntPtr dc);
@@ -161,6 +173,78 @@ public static class GlassScreenCapture {
     static int lastLeft,lastTop,lastWidth,lastHeight;
     static readonly object captureGate=new object();
     static bool paused;
+
+    internal static GlassScreenFrame Canvas() {
+        int left=GetSystemMetrics(76),top=GetSystemMetrics(77),width=GetSystemMetrics(78),height=GetSystemMetrics(79);
+        if(width<=0||height<=0)return null;
+        double scale=Math.Min(1.0,Math.Min(960.0/width,600.0/height));
+        return new GlassScreenFrame(left,top,width,height,Math.Max(1,(int)Math.Round(width*scale)),Math.Max(1,(int)Math.Round(height*scale)),null);
+    }
+    internal static bool SameCanvas(GlassScreenFrame a,GlassScreenFrame b) {
+        return a!=null&&b!=null&&a.Left==b.Left&&a.Top==b.Top&&a.NativeWidth==b.NativeWidth&&a.NativeHeight==b.NativeHeight;
+    }
+    internal static Int32Rect Tile(GlassScreenFrame canvas,IntPtr hwnd) {
+        Rect rect;if(!GetWindowRect(hwnd,out rect))return Int32Rect.Empty;
+        double sx=(double)canvas.Width/canvas.NativeWidth,sy=(double)canvas.Height/canvas.NativeHeight;
+        int padding=Math.Max(5,(int)Math.Round(12*Math.Min(sx,sy)))+4;
+        int left=Math.Max(0,(int)Math.Floor((rect.Left-canvas.Left)*sx)-padding),top=Math.Max(0,(int)Math.Floor((rect.Top-canvas.Top)*sy)-padding);
+        int right=Math.Min(canvas.Width,(int)Math.Ceiling((rect.Right-canvas.Left)*sx)+padding),bottom=Math.Min(canvas.Height,(int)Math.Ceiling((rect.Bottom-canvas.Top)*sy)+padding);
+        return right>left&&bottom>top?new Int32Rect(left,top,right-left,bottom-top):Int32Rect.Empty;
+    }
+    // One reusable DC/DIB and three leased output buffers. A pending frame may
+    // be replaced, but a buffer being uploaded by WPF is never overwritten.
+    internal sealed class Surface : IDisposable {
+        sealed class Buffer {
+            internal byte[] Pixels;internal int Used;
+            internal Buffer(int size){Pixels=new byte[size];}
+            internal void Release(){Interlocked.Exchange(ref Used,0);}
+        }
+        IntPtr screen,memory,dib,previous,bits;
+        int width,height;byte[] pixels,pass;int[] sums;Buffer[] buffers;
+        ulong lastHash;int lastLeft,lastTop;bool hasHash;
+        void Resize(int w,int h) {
+            if(w==width&&h==height&&dib!=IntPtr.Zero)return;
+            Dispose();screen=GetDC(IntPtr.Zero);if(screen==IntPtr.Zero)throw new InvalidOperationException("Cannot read the screen DC");
+            memory=CreateCompatibleDC(screen);if(memory==IntPtr.Zero)throw new InvalidOperationException("Cannot allocate the material DC");
+            var info=new BitmapInfo{Size=(uint)Marshal.SizeOf(typeof(BitmapInfo)),Width=w,Height=-h,Planes=1,BitCount=32,ImageSize=(uint)(w*h*4)};
+            dib=CreateDIBSection(memory,ref info,0,out bits,IntPtr.Zero,0);
+            if(dib==IntPtr.Zero||bits==IntPtr.Zero)throw new InvalidOperationException("Cannot allocate the material bitmap");
+            previous=SelectObject(memory,dib);SetStretchBltMode(memory,3);
+            width=w;height=h;pixels=new byte[w*h*4];pass=new byte[pixels.Length];sums=new int[w*3];
+            buffers=new[]{new Buffer(pixels.Length),new Buffer(pixels.Length),new Buffer(pixels.Length)};hasHash=false;
+        }
+        internal GlassScreenFrame Capture(IntPtr hwnd,GlassScreenFrame canvas,Int32Rect tile,bool full) {
+            if(tile.IsEmpty||tile.Width<=0||tile.Height<=0)return null;
+            Resize(tile.Width,tile.Height);
+            int left=canvas.Left+(int)Math.Round((double)tile.X*canvas.NativeWidth/canvas.Width),top=canvas.Top+(int)Math.Round((double)tile.Y*canvas.NativeHeight/canvas.Height);
+            int right=canvas.Left+(int)Math.Round((double)(tile.X+tile.Width)*canvas.NativeWidth/canvas.Width),bottom=canvas.Top+(int)Math.Round((double)(tile.Y+tile.Height)*canvas.NativeHeight/canvas.Height);
+            lock(captureGate) {
+                if(paused||!SetWindowDisplayAffinity(hwnd,0x11))return null;
+                try {
+                    if(!StretchBlt(memory,0,0,width,height,screen,left,top,right-left,bottom-top,0x00CC0020))throw new InvalidOperationException("Cannot capture the screen material");
+                    Marshal.Copy(bits,pixels,0,pixels.Length);
+                }finally{SetWindowDisplayAffinity(hwnd,0);}
+            }
+            ulong hash=14695981039346656037UL;
+            unchecked{for(int i=0;i<pixels.Length;i+=4){hash=(hash^pixels[i])*1099511628211UL;hash=(hash^pixels[i+1])*1099511628211UL;hash=(hash^pixels[i+2])*1099511628211UL;}}
+            if(!full&&hasHash&&hash==lastHash&&left==lastLeft&&top==lastTop)return null;
+            Buffer buffer=null;foreach(Buffer candidate in buffers)if(Interlocked.CompareExchange(ref candidate.Used,1,0)==0){buffer=candidate;break;}
+            if(buffer==null)return null;
+            try {
+                double scale=Math.Min((double)canvas.Width/canvas.NativeWidth,(double)canvas.Height/canvas.NativeHeight);
+                GlassCapture.BlurInto(pixels,width,height,Math.Max(5,(int)Math.Round(12*scale)),pass,buffer.Pixels,sums);
+                lastHash=hash;lastLeft=left;lastTop=top;hasHash=true;
+                var result=new GlassScreenFrame(canvas.Left,canvas.Top,canvas.NativeWidth,canvas.NativeHeight,width,height,buffer.Pixels);
+                result.PixelLeft=tile.X;result.PixelTop=tile.Y;result.CanvasWidth=canvas.Width;result.CanvasHeight=canvas.Height;result.ReleasePixels=buffer.Release;
+                return result;
+            }catch{buffer.Release();throw;}
+        }
+        public void Dispose() {
+            if(previous!=IntPtr.Zero&&memory!=IntPtr.Zero)SelectObject(memory,previous);
+            if(dib!=IntPtr.Zero)DeleteObject(dib);if(memory!=IntPtr.Zero)DeleteDC(memory);if(screen!=IntPtr.Zero)ReleaseDC(IntPtr.Zero,screen);
+            previous=dib=memory=screen=bits=IntPtr.Zero;
+        }
+    }
 
     // Only wait for the short GDI capture section, never the blur calculation.
     // This keeps capture-exclusion changes out of native moves and resizes.
@@ -220,6 +304,101 @@ public static class GlassScreenCapture {
             (frame.Left-rect.Left)/dpiX-offsetX, (frame.Top-rect.Top)/dpiY-offsetY,
             frame.NativeWidth/dpiX, frame.NativeHeight/dpiY
         };
+    }
+}
+
+// Capture and blur off the dispatcher. Only the newest completed tile is
+// uploaded; the full screen-space texture stays available for instant drags.
+public sealed class GlassMaterialRenderer : IDisposable {
+    readonly IntPtr hwnd;readonly ImageBrush brush;readonly System.Windows.Controls.Border outer;readonly Window window;
+    readonly AutoResetEvent wake=new AutoResetEvent(false);readonly Thread worker;readonly object mailbox=new object();
+    GlassScreenFrame latest;volatile GlassScreenFrame canvas;WriteableBitmap bitmap;bool presentQueued;
+    List<double> measuredIntervals;long previousPresentation;
+    volatile bool stopped,isPaused;int refreshAll=1;long presented,captures,unchanged;
+    public GlassScreenFrame Frame {get{return canvas;}}
+    public long PresentedFrames {get{return Interlocked.Read(ref presented);}}
+    public long CaptureAttempts {get{return Interlocked.Read(ref captures);}}
+    public long UnchangedFrames {get{return Interlocked.Read(ref unchanged);}}
+    public string LastError {get;private set;}
+    public int LastTilePixels {get;private set;}
+    public void StartMeasurement(){measuredIntervals=new List<double>();previousPresentation=0;}
+    public double[] StopMeasurement(){double[] result=measuredIntervals==null?new double[0]:measuredIntervals.ToArray();measuredIntervals=null;return result;}
+    [DllImport("winmm.dll")]static extern uint timeBeginPeriod(uint value);
+    [DllImport("winmm.dll")]static extern uint timeEndPeriod(uint value);
+    public GlassMaterialRenderer(Window window,System.Windows.Controls.Border outer,ImageBrush brush) {
+        this.window=window;this.outer=outer;this.brush=brush;hwnd=new System.Windows.Interop.WindowInteropHelper(window).Handle;
+        if(hwnd==IntPtr.Zero)throw new InvalidOperationException("The glass window is not initialized");
+        GlassScreenCapture.SetPaused(false);
+        worker=new Thread(Run){IsBackground=true,Name="Codex glass material"};worker.Start();
+    }
+    public void SetPaused(bool value) {
+        if(stopped||isPaused==value)return;isPaused=value;GlassScreenCapture.SetPaused(value);
+        if(!value)Interlocked.Exchange(ref refreshAll,1);wake.Set();
+    }
+    void Publish(GlassScreenFrame frame) {
+        lock(mailbox) {
+            if(stopped||isPaused){frame.Release();return;}
+            if(latest!=null)latest.Release();latest=frame;
+            if(presentQueued)return;presentQueued=true;
+        }
+        window.Dispatcher.BeginInvoke(DispatcherPriority.Render,new Action(Present));
+    }
+    void Present() {
+        GlassScreenFrame frame;
+        lock(mailbox){frame=latest;latest=null;presentQueued=false;}
+        if(frame==null)return;
+        try {
+            if(stopped||isPaused)return;
+            bool full=frame.Width==frame.CanvasWidth&&frame.Height==frame.CanvasHeight;
+            if(bitmap==null||!GlassScreenCapture.SameCanvas(canvas,frame)) {
+                if(!full){Interlocked.Exchange(ref refreshAll,1);return;}
+                bitmap=new WriteableBitmap(frame.CanvasWidth,frame.CanvasHeight,96,96,PixelFormats.Bgra32,null);
+                canvas=new GlassScreenFrame(frame.Left,frame.Top,frame.NativeWidth,frame.NativeHeight,frame.CanvasWidth,frame.CanvasHeight,null);
+                brush.Viewbox=new Rect(0,0,canvas.Width,canvas.Height);brush.ImageSource=bitmap;
+            }
+            bitmap.WritePixels(new Int32Rect(frame.PixelLeft,frame.PixelTop,frame.Width,frame.Height),frame.Pixels,frame.Width*4,0);
+            var source=System.Windows.Interop.HwndSource.FromHwnd(hwnd);
+            if(source!=null&&source.CompositionTarget!=null) {
+                Matrix dpi=source.CompositionTarget.TransformToDevice;
+                double[] viewport=GlassScreenCapture.Viewport(canvas,hwnd,System.Windows.Controls.Canvas.GetLeft(outer),System.Windows.Controls.Canvas.GetTop(outer),dpi.M11,dpi.M22);
+                if(viewport!=null)brush.Viewport=new Rect(viewport[0],viewport[1],viewport[2],viewport[3]);
+            }
+            Interlocked.Increment(ref presented);LastError=null;
+            LastTilePixels=frame.Width*frame.Height;
+            if(measuredIntervals!=null){long now=Stopwatch.GetTimestamp();if(previousPresentation!=0)measuredIntervals.Add((now-previousPresentation)*1000.0/Stopwatch.Frequency);previousPresentation=now;}
+        }catch(Exception error){LastError=error.Message;}finally{frame.Release();}
+    }
+    void Run() {
+        bool highResolution=timeBeginPeriod(1)==0;
+        using(var local=new GlassScreenCapture.Surface())using(var full=new GlassScreenCapture.Surface()) {
+            try {
+                while(!stopped) {
+                    if(isPaused){if(highResolution){timeEndPeriod(1);highResolution=false;}wake.WaitOne();continue;}
+                    if(!highResolution)highResolution=timeBeginPeriod(1)==0;
+                    var watch=Stopwatch.StartNew();
+                    try {
+                        var next=GlassScreenCapture.Canvas();
+                        if(next==null){wake.WaitOne(250);continue;}
+                        bool all=Interlocked.Exchange(ref refreshAll,0)!=0||!GlassScreenCapture.SameCanvas(canvas,next);
+                        var tile=all?new Int32Rect(0,0,next.Width,next.Height):GlassScreenCapture.Tile(next,hwnd);
+                        var frame=(all?full:local).Capture(hwnd,next,tile,all);Interlocked.Increment(ref captures);
+                        if(frame!=null)Publish(frame);else Interlocked.Increment(ref unchanged);
+                        // Do not let the first tile replace an initial whole-screen
+                        // frame before the UI has installed its reusable bitmap.
+                        if(all&&canvas==null)while(!stopped&&!isPaused&&canvas==null)wake.WaitOne(2);
+                    }catch(Exception error){LastError=error.Message;wake.WaitOne(250);}
+                    int remaining=(int)Math.Ceiling(1000.0/60-watch.Elapsed.TotalMilliseconds);
+                    if(remaining>0&&!stopped)wake.WaitOne(remaining);
+                }
+            }finally{if(highResolution)timeEndPeriod(1);}
+        }
+    }
+    public void Dispose() {
+        if(stopped)return;stopped=true;wake.Set();GlassScreenCapture.SetPaused(true);
+        lock(mailbox){if(latest!=null){latest.Release();latest=null;}}
+        worker.Join(1000);
+        if(!worker.IsAlive)wake.Dispose();
+        GlassScreenCapture.SetPaused(false);
     }
 }
 

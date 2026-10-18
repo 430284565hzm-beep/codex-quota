@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 [assembly: AssemblyTitle("Codex 余量")]
 [assembly: AssemblyDescription("便携式 Codex 余量小组件")]
-[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.4.1.0")]
 
 internal static class PortableHost
 {
